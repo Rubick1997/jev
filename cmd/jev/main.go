@@ -15,7 +15,7 @@ import (
 	"github.com/borislemeec/jev/internal/usage"
 )
 
-const version = "0.1.0"
+const version = "0.2.0"
 
 func main() {
 	if len(os.Args) < 2 {
@@ -35,6 +35,12 @@ func main() {
 		err = run.Hook(os.Args[2:])
 	case "lint":
 		err = run.Lint(os.Args[2:])
+	case "route":
+		err = run.Route(os.Args[2:])
+	case "compact":
+		err = run.Compact(os.Args[2:])
+	case "decide":
+		err = run.Decide(os.Args[2:])
 	case "probe":
 		err = run.Probe(os.Args[2:])
 	case "gain":
@@ -63,6 +69,10 @@ commands:
   find    rank files against a plain-language description of what you want
   ask     put a yes/no question to one or more files
   scan    dry run: what would be sent, and what it would cost (no API call)
+  hook    read (PreToolUse) | on | off | status | stats
+  route   prompt (UserPromptSubmit) | on | off | status | test "<prompt>"
+  compact keep/drop each part of a session transcript into a handoff file
+  decide  one raw request: {state, questions} JSON on stdin, answers on stdout
   probe   verify the API contract and print a raw response
   gain    show what jev has cost and how much it read out-of-context
 

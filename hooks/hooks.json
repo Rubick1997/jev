@@ -4,11 +4,22 @@
       {
         "matcher": "Read",
         "hooks": [
-          {
-            "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/bin/jev hook read",
-            "timeout": 20
-          }
+          { "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/bin/jev hook read", "timeout": 20 }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          { "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/bin/jev route prompt", "timeout": 10 }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "matcher": "clear|startup",
+        "hooks": [
+          { "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/bin/jev compact inject", "timeout": 5 }
         ]
       }
     ]

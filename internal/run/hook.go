@@ -10,6 +10,9 @@ import (
 	"strconv"
 	"strings"
 
+	"time"
+
+	"github.com/borislemeec/jev/internal/state"
 	"github.com/borislemeec/jev/internal/typesafe"
 )
 
@@ -34,17 +37,58 @@ type hookInput struct {
 	ToolName       string         `json:"tool_name"`
 	ToolInput      map[string]any `json:"tool_input"`
 	CWD            string         `json:"cwd"`
+	SessionID      string         `json:"session_id"`
 	TranscriptPath string         `json:"transcript_path"`
 }
 
 type hookOutput struct {
 	HookSpecificOutput *hookSpecific `json:"hookSpecificOutput,omitempty"`
-	AdditionalContext  string        `json:"additionalContext,omitempty"`
 }
 
 type hookSpecific struct {
-	HookEventName string         `json:"hookEventName"`
-	UpdatedInput  map[string]any `json:"updatedInput,omitempty"`
+	HookEventName      string         `json:"hookEventName"`
+	PermissionDecision string         `json:"permissionDecision,omitempty"`
+	UpdatedInput       map[string]any `json:"updatedInput,omitempty"`
+	AdditionalContext  string         `json:"additionalContext,omitempty"`
+}
+
+// logPass records a pass-through that got past the cheap gates, so the log
+// shows what the hook considered and declined, not every small-file Read.
+func logPass(in hookInput, path, reason string, conf float64) error {
+	state.Record(state.Decision{Kind: "read", Session: in.SessionID, CWD: in.CWD, File: path,
+		Outcome: "pass", Reason: reason, Conf: conf})
+	return passThrough(reason)
+}
+
+// noteReread logs a Read of a file this session had narrowed. An explicit
+// window outside the narrowed one is the clearest available signal that the
+// narrowing missed what the agent needed; one inside it is the agent paging
+// within what it was shown.
+func noteReread(in hookInput, path string) {
+	if in.SessionID == "" {
+		return
+	}
+	m := state.Narrowings(in.SessionID)
+	n, ok := m[path]
+	if !ok || time.Since(n.TS) > 30*time.Minute {
+		return
+	}
+	off, _ := in.ToolInput["offset"].(float64)
+	lim, _ := in.ToolInput["limit"].(float64)
+	outcome := "outside"
+	if off > 0 && int(off) >= n.Offset && int(off+lim) <= n.Offset+n.Limit {
+		outcome = "inside"
+	}
+	if off == 0 && lim == 0 {
+		outcome = "full"
+	}
+	state.Record(state.Decision{Kind: "reread", Session: in.SessionID, CWD: in.CWD, File: path,
+		Outcome: outcome, Conf: n.Conf, Extra: map[string]any{"offset": off, "limit": lim,
+			"narrowed_offset": n.Offset, "narrowed_limit": n.Limit, "after_s": int(time.Since(n.TS).Seconds())}})
+	if outcome != "inside" {
+		delete(m, path)
+		state.SaveNarrowings(in.SessionID, m)
+	}
 }
 
 // passThrough emits the empty decision: the read proceeds exactly as written.
@@ -65,8 +109,17 @@ func envInt(name string, def int) int {
 }
 
 func Hook(args []string) error {
-	if len(args) == 0 || args[0] != "read" {
-		return fmt.Errorf("usage: jev hook read   (reads a PreToolUse payload on stdin)")
+	if len(args) == 0 {
+		return fmt.Errorf("usage: jev hook read|on|off|status|stats")
+	}
+	switch args[0] {
+	case "read":
+	case "on", "off", "status":
+		return Switch("read_hook", args)
+	case "stats":
+		return HookStats(args[1:])
+	default:
+		return fmt.Errorf("usage: jev hook read|on|off|status|stats")
 	}
 	// On by default. JEV_HOOK_DISABLE is the escape hatch: one variable turns
 	// every narrowing off without uninstalling anything, which is what you want
@@ -86,6 +139,16 @@ func Hook(args []string) error {
 	path, _ := in.ToolInput["file_path"].(string)
 	if path == "" {
 		return passThrough("no file_path")
+	}
+	noteReread(in, path)
+	// Narrowing must approve the Read, so only touch reads Claude Code would
+	// allow anyway: files under the project directory. Anything else keeps its
+	// normal permission flow.
+	if rel, err := filepath.Rel(in.CWD, path); in.CWD == "" || err != nil || strings.HasPrefix(rel, "..") {
+		return passThrough("outside the project directory")
+	}
+	if !state.Enabled(in.SessionID, func(s state.Switches) *bool { return s.ReadHook }, true) {
+		return passThrough("read hook switched off (jev hook on to re-enable)")
 	}
 	// An explicit window is the agent's own decision; never second-guess it.
 	if _, ok := in.ToolInput["offset"]; ok {
@@ -117,7 +180,7 @@ func Hook(args []string) error {
 
 	goal := lastUserMessage(in.TranscriptPath)
 	if len(goal) < 12 {
-		return passThrough("no goal found in the transcript")
+		return logPass(in, path, "no goal found in the transcript", 0)
 	}
 
 	client, err := typesafe.New()
@@ -126,7 +189,7 @@ func Hook(args []string) error {
 	}
 	got, err := locateLine(context.Background(), client, goal, filepath.Base(path), data)
 	if err != nil || got.Line == 0 {
-		return passThrough(fmt.Sprintf("locate failed or found nothing (err=%v, line=%d, exists=%.2f)", err, got.Line, got.Exists))
+		return logPass(in, path, fmt.Sprintf("locate failed or found nothing (err=%v, line=%d, exists=%.2f)", err, got.Line, got.Exists), got.Conf)
 	}
 	// Narrow only when the chunk distribution is peaked. This gate is measured
 	// rather than guessed: across twelve labelled targets in three large files
@@ -139,7 +202,7 @@ func Hook(args []string) error {
 		minConf = v
 	}
 	if got.Conf < minConf {
-		return passThrough(fmt.Sprintf("chunk confidence %.2f is under the %.2f floor", got.Conf, minConf))
+		return logPass(in, path, fmt.Sprintf("chunk confidence %.2f is under the %.2f floor", got.Conf, minConf), got.Conf)
 	}
 
 	// A fifth of the file, never under 150 lines. Both numbers are measured.
@@ -163,19 +226,33 @@ func Hook(args []string) error {
 		offset = lines - window
 	}
 
+	state.Record(state.Decision{Kind: "read", Session: in.SessionID, CWD: in.CWD, File: path,
+		Outcome: "narrowed", Conf: got.Conf, Extra: map[string]any{"lines": lines, "offset": offset,
+			"limit": window, "match": got.Line, "goal": goal}})
+	if in.SessionID != "" {
+		m := state.Narrowings(in.SessionID)
+		m[path] = state.Narrowing{Offset: offset, Limit: window, Conf: got.Conf, TS: time.Now()}
+		state.SaveNarrowings(in.SessionID, m)
+	}
+
+	note := fmt.Sprintf(
+		"jev narrowed this Read: %s is %d lines, showing %d-%d (match at line %d, confidence %.2f). "+
+			"Read it again with an explicit offset or limit to see any other part — nothing was removed from the file.",
+		filepath.Base(path), lines, offset, offset+window-1, got.Line, got.Conf)
 	return json.NewEncoder(os.Stdout).Encode(hookOutput{
 		HookSpecificOutput: &hookSpecific{
 			HookEventName: "PreToolUse",
+			// Rewriting input requires a decision. "defer" pauses a headless
+			// session, so this allows — but only for files inside the project,
+			// which Claude Code already reads without asking (see the gate above).
+			PermissionDecision: "allow",
 			UpdatedInput: map[string]any{
 				"file_path": path,
 				"offset":    offset,
 				"limit":     window,
 			},
+			AdditionalContext: note,
 		},
-		AdditionalContext: fmt.Sprintf(
-			"jev narrowed this Read: %s is %d lines, showing %d-%d (match at line %d, confidence %.2f). "+
-				"Read it again with an explicit offset or limit to see any other part — nothing was removed from the file.",
-			filepath.Base(path), lines, offset, offset+window-1, got.Line, got.Conf),
 	})
 }
 

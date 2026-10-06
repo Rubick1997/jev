@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# jev-browse: drive a browser from a plan; Jev executes, Claude plans.
+# Resolves the plugin root through symlinks so it works from ~/.local/bin,
+# the repo checkout, or the Claude Code plugin cache.
+set -euo pipefail
+
+src="${BASH_SOURCE[0]}"
+while [ -L "$src" ]; do
+  dir="$(cd -P "$(dirname "$src")" && pwd)"
+  src="$(readlink "$src")"
+  [[ "$src" != /* ]] && src="$dir/$src"
+done
+bin_dir="$(cd -P "$(dirname "$src")" && pwd)"
+root="$(cd "$bin_dir/.." && pwd)"
+browse="$root/browse"
+
+command -v node >/dev/null 2>&1 || { echo "jev-browse: node is required (https://nodejs.org)" >&2; exit 2; }
+
+if [ ! -d "$browse/node_modules/playwright" ]; then
+  echo "jev-browse: first run, installing dependencies in $browse ..." >&2
+  (cd "$browse" && npm install --omit=dev --no-audit --no-fund --silent) >&2
+  # Fetch Chromium only if this Playwright version's build is not cached yet.
+  if ! (cd "$browse" && node -e "const{chromium}=require('playwright');require('fs').accessSync(chromium.executablePath())") 2>/dev/null; then
+    (cd "$browse" && npx --no-install playwright install chromium) >&2
+  fi
+fi
+
+exec node "$browse/run.mjs" "$@"

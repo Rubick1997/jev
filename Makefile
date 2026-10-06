@@ -1,5 +1,5 @@
 BIN := bin/jev
-PLUGIN_BIN := $(HOME)/.claude/plugins/cache/jev/jev/0.1.0/bin/jev
+PLUGIN_BIN := $(HOME)/.claude/plugins/cache/jev/jev/0.2.0/bin/jev
 
 .PHONY: build test fmt vet install sync clean
 

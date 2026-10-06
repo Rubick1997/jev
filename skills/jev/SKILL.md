@@ -128,6 +128,13 @@ Nothing was removed from the file on disk. If the part you need is not in the
 window, read it again with an explicit `offset` or `limit` — an explicit window
 is never second-guessed. Measured: 50 narrowed windows, none lost its target.
 
+## Related commands
+
+- `/jev:hook on|off|status|stats`: toggle the Read hook for this session, and see how often narrowings missed.
+- `/jev:route on|off`: classify each prompt into a model tier and delegate cheap work to subagents.
+- `/jev:compact`: a keep/drop compaction into a handoff that loads after `/clear`.
+- `jev decide`: send one raw System One request, `{state, questions}` JSON on stdin, for scripts.
+
 ## Setup
 
 Needs `TYPE_SAFE_AI_KEY`, or an OpenRouter key in `JEV_OPENROUTER_API_KEY` or

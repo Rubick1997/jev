@@ -1,4 +1,4 @@
-bin/
+bin/jev
 .jev/
 *.log
 bench/**/results*.json

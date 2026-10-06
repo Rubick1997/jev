@@ -1,0 +1,13 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Acme - Dashboard</title></head>
+<body>
+  <h1>Dashboard</h1>
+  <p id="who"></p>
+  <a href="fixture.html">Sign out</a>
+  <script>
+    const q = new URLSearchParams(location.search);
+    document.getElementById('who').textContent = 'Signed in as ' + (q.get('email') || '(nobody)') + ', region ' + (q.get('region') || '(none)') + '.';
+  </script>
+</body>
+</html>

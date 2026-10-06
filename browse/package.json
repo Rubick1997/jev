@@ -1,0 +1,11 @@
+{
+  "name": "jev-browse",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Browser automation where Claude plans and Jev executes, handing back when unsure.",
+  "main": "run.mjs",
+  "bin": { "jev-browse": "run.mjs" },
+  "scripts": { "test": "bash test/smoke.sh" },
+  "dependencies": { "playwright": "1.63.0" }
+}
