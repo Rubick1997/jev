@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -51,8 +52,10 @@ var tiers = map[string]string{
 		"whose exact change is stated, running a command and reporting its output, a factual question about the code.",
 	"sonnet": "Ordinary engineering with a clear goal: implement a well-defined feature or test across a few files, " +
 		"fix a bug with a known cause, write docs, refactor along a stated pattern.",
-	"opus": "Needs judgment: ambiguous or open-ended requests, architecture or design decisions, debugging an unknown " +
-		"cause, security- or data-sensitive changes, multi-step plans across many files, reviewing or critiquing work.",
+	"opus": "Needs judgment: ambiguous or open-ended requests, design decisions within one area, debugging an unknown " +
+		"cause, multi-step plans across many files, reviewing or critiquing work.",
+	"fable": "A wrong call is expensive: strategy, system architecture, auth or security, production data migrations, " +
+		"or changes to shared infrastructure or config that other projects depend on.",
 }
 
 type tierResult struct {
@@ -91,9 +94,7 @@ func routeHook() error {
 		return empty()
 	}
 	p := strings.TrimSpace(in.Prompt)
-	// Slash commands and one-word follow-ups ("yes", "continue") carry their
-	// meaning in the conversation, not the text; classifying them is noise.
-	if strings.HasPrefix(p, "/") || len(p) < 20 {
+	if skipPrompt(p) {
 		return empty()
 	}
 	if len(p) > 4000 {
@@ -119,19 +120,71 @@ func routeHook() error {
 		return empty()
 	}
 
-	var note string
-	switch r.tier {
+	return json.NewEncoder(os.Stdout).Encode(map[string]any{
+		"hookSpecificOutput": map[string]any{"hookEventName": "UserPromptSubmit", "additionalContext": routeNote(r.tier, r.conf)},
+	})
+}
+
+func routeNote(tier string, conf float64) string {
+	switch tier {
 	case "opus":
-		note = fmt.Sprintf("[jev route] Classified as needing judgment (opus, %.2f): handle this in the main session.", r.conf)
+		return fmt.Sprintf("[jev route] Classified as needing judgment (opus, %.2f): handle this in the main session.", conf)
+	case "fable":
+		return fmt.Sprintf("[jev route] Classified as fable-tier (%.2f): a wrong call here is expensive. Do the work "+
+			"through a subagent (Agent tool, model: \"fable\") with a self-contained prompt, then check its result "+
+			"before replying. Keep final verification in this session.", conf)
 	default:
-		note = fmt.Sprintf("[jev route] Classified as %s-tier (%.2f). Unless you see a reason it needs more judgment, "+
+		return fmt.Sprintf("[jev route] Classified as %s-tier (%.2f). Unless you see a reason it needs more judgment, "+
 			"do the work through a subagent (Agent tool, model: %q) with a self-contained prompt, then check its "+
 			"result before replying. Keep any planning, decisions and final verification in this session.",
-			r.tier, r.conf, r.tier)
+			tier, conf, tier)
 	}
-	return json.NewEncoder(os.Stdout).Encode(map[string]any{
-		"hookSpecificOutput": map[string]any{"hookEventName": "UserPromptSubmit", "additionalContext": note},
-	})
+}
+
+// skipPrompt reports prompts whose meaning lives in the conversation rather
+// than the text: slash commands, shell (!) and memory (#) input, system turns
+// such as task notifications (<), and short follow-up replies.
+func skipPrompt(p string) bool {
+	if p == "" || strings.ContainsRune("/!#<", rune(p[0])) || len(p) < 20 {
+		return true
+	}
+	return isFollowUp(p)
+}
+
+var (
+	followUpStart = setOf("yes", "yeah", "yep", "no", "nope", "ok", "okay", "sure", "do", "go",
+		"great", "thanks", "perfect", "nice", "good", "fine", "agreed", "also",
+		"and", "but", "now", "then", "instead", "actually", "same", "again", "undo")
+	followUpWords = setOf("that", "it", "this", "those", "these", "them", "shorter", "longer",
+		"above", "previous", "last", "earlier", "same", "again", "instead")
+	wordRe = regexp.MustCompile(`[a-z']+`)
+)
+
+func isFollowUp(p string) bool {
+	words := wordRe.FindAllString(strings.ToLower(p), -1)
+	if len(words) == 0 || len(words) > 12 {
+		return false
+	}
+	if followUpStart[words[0]] {
+		return true
+	}
+	// Reference words only count in very short replies: "that" is also a relative pronoun.
+	if len(words) <= 6 {
+		for _, w := range words {
+			if followUpWords[w] {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func setOf(words ...string) map[string]bool {
+	m := make(map[string]bool, len(words))
+	for _, w := range words {
+		m[w] = true
+	}
+	return m
 }
 
 func truncateStr(s string, n int) string {
